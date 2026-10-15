@@ -403,6 +403,28 @@ def _cron_summary(cron_report: dict[str, Any]) -> Optional[str]:
     return "cron links: " + ", ".join(parts) if parts else None
 
 
+def _extract_snapshot(tf: tarfile.TarFile, dest: Path) -> None:
+    """Extract a snapshot into ``dest`` without letting any member write outside it.
+
+    Python 3.11.4+ (and 3.12+) ship extraction filters, so ``filter="data"`` vets every member.
+    Earlier 3.11 patch releases have no filter; there only plain files and directories are
+    extracted, because a symlink/hardlink member followed by a path through it escapes ``dest``.
+    """
+    has_filter = hasattr(tarfile, "data_filter")
+    for member in tf.getmembers():
+        if member.name.startswith("/") or ".." in Path(member.name).parts:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+        if not has_filter and not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(
+                f"refusing to extract link or special member {member.name!r} without tarfile extraction "
+                "filters; upgrade Python to 3.11.4 or newer"
+            )
+    if has_filter:
+        tf.extractall(str(dest), filter="data")
+    else:
+        tf.extractall(str(dest))
+
+
 def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot (explicit id or newest): safety-snapshot the CURRENT tree; stage
     current top-level entries; extract; on failure move staged entries back. Returns ``(ok, message, snapshot_path)``."""
@@ -448,14 +470,7 @@ def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]
 
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Reject absolute paths and ".." defensively; Python 3.12+ also gets filter='data', older interpreters fall back unfiltered.
-            for member in tf.getmembers():
-                if member.name.startswith("/") or ".." in Path(member.name).parts:
-                    raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
-            try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
-            except TypeError:
-                tf.extractall(str(skills))  # Python < 3.12 — no filter kwarg
+            _extract_snapshot(tf, skills)
     except (OSError, tarfile.TarError) as e:
         # A partial extract can leave entries the original tree never had; drop those first or the "restored" tree is skills + a slice of snapshot.
         keep = _EXCLUDE_TOP_LEVEL | {orig.name for orig, _ in moved}

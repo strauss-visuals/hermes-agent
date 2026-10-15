@@ -146,7 +146,10 @@ _HANDOFF_REPOS = {"github.com/nousresearch/hermes-plugin-holographic": "holograp
 
 def _adopt_handoff_install(plugin_dir: Path, record: dict) -> Optional[dict]:
     source = str(record.get("source") or "").split("#", 1)[0]
-    entry = get_live_catalog_entry(_HANDOFF_REPOS.get(_normalize_repo(source), ""))
+    handoff_name = _HANDOFF_REPOS.get(_normalize_repo(source))
+    if handoff_name is None:  # the common case: skip the live-catalog load for every ordinary URL install
+        return None
+    entry = get_live_catalog_entry(handoff_name)
     if entry is None:
         return None
     sha = str(record.get("revision") or "").lower()
@@ -347,13 +350,17 @@ def _local_changes(target: Path) -> tuple[Optional[list[str]], list[str]]:
             f"Could not inspect local changes for '{target.name}': {detail}"
         )
     local, modified = [], []
-    for item in status.stdout.split("\0"):
+    records = iter(status.stdout.split("\0"))
+    for item in records:
         if len(item) < 4:
             continue
         code, rel = item[:2], item[3:]
-        if any(_skip_preserve(part) for part in Path(rel).parts):
-            continue
-        (local if code in ("??", "!!") else modified).append(rel)
+        # Rename/copy records are followed by a bare-path token (the origin) with no XY prefix.
+        origin = next(records, "") if "R" in code or "C" in code else ""
+        for path in filter(None, (rel, origin)):
+            if any(_skip_preserve(part) for part in Path(path).parts):
+                continue
+            (local if code in ("??", "!!") else modified).append(path)
     return local, modified
 
 

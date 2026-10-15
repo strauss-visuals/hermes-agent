@@ -312,11 +312,18 @@ def load_raw_entries(catalog_dir: Path) -> list[dict]:
             continue
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, OSError):
+        except (yaml.YAMLError, OSError) as e:
+            _log(f"skipping {path.name}: {e}")
             continue
         if isinstance(raw, dict) and raw.get("name") and raw.get("repo") and raw.get("sha"):
-            entries.append(raw)
+            # Unquoted YAML dates/timestamps load as datetime objects, which json.dump rejects.
+            entries.append(json.loads(json.dumps(raw, default=_json_scalar)))
     return entries
+
+
+def _json_scalar(value: object) -> str:
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
 
 
 def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR,

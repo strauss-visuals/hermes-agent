@@ -41,6 +41,17 @@ def test_protocol_encode_decode_roundtrip():
     assert out["payload"] == {"x": 1}
 
 
+@pytest.mark.parametrize(
+    ("given", "ok"),
+    [("tok", True), ("tok2", False), ("to", False), ("t\u00f6k", False), ("\ud800", False)],
+)
+def test_protocol_validate_request_token(given, ok):
+    from plugins.google_meet.node import protocol
+
+    msg = protocol.make_request("ping", given, {}, req_id="abc")
+    assert protocol.validate_request(msg, "tok")[0] is ok
+
+
 # ---------------------------------------------------------------------------
 # registry.py
 # ---------------------------------------------------------------------------

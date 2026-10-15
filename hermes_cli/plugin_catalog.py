@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 CATALOG_TIERS = ("official", "community")
 # Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
 # (the common case for community submissions); "general" is for plugins that fit no shelf.
+CATALOG_PLATFORMS = ("linux", "macos", "windows")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
@@ -40,8 +41,9 @@ LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+# \Z, not $: $ also matches just before a trailing newline, which the CI validator (fullmatch) rejects.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}\Z")
 # Catalog images may only come from GitHub: the Desktop catalog browser never fans out to
 # third-party hosts, and a raw URL pinned to the entry's commit is as immutable as the sha.
 IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
@@ -50,10 +52,14 @@ IMAGE_HOST_SUFFIX = ".githubusercontent.com"
 
 def is_allowed_image_url(url: str) -> bool:
     from urllib.parse import urlsplit
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:  # e.g. "https://[bad/x.png"
+        return False
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
-_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}\Z")
+_SUBDIR_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 @dataclass
@@ -124,7 +130,13 @@ def get_catalog_dir() -> Path:
 # ── Parsing ──────────────────────────────────────────────────────────────────
 
 def _str_list(raw: Any) -> list[str]:
-    return [str(x) for x in raw if isinstance(x, (str, int, float))] if isinstance(raw, list) else []
+    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
+
+
+def _valid_subdir(subdir: str) -> bool:
+    """Same rule as the CI validator: ``subdir`` is joined onto a clone and a raw-manifest URL."""
+    return not subdir or (
+        _SUBDIR_RE.fullmatch(subdir) is not None and not any(seg in ("", ".", "..") for seg in subdir.split("/")))
 
 
 def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
@@ -137,6 +149,8 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     sha = str(data.get("sha") or "").strip().lower()
     tier = str(data.get("tier") or "community")
     category = str(data.get("category") or "desktop")
+    subdir = str(data.get("subdir") or "").strip()
+    platforms = _str_list(data.get("platforms"))
     problem = (
         f"invalid name {name!r} (must match [a-z0-9_-]{{1,64}})" if not _NAME_RE.match(name)
         else f"repo must be an https:// URL (got {repo!r})" if not repo.startswith("https://")
@@ -144,6 +158,9 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         else f"tier must be one of {'/'.join(CATALOG_TIERS)} (got {tier!r})" if tier not in CATALOG_TIERS
         else f"category must be one of {'/'.join(CATALOG_CATEGORIES)} (got {category!r})"
         if category not in CATALOG_CATEGORIES
+        else f"subdir {subdir!r} must be a relative path without '.' or '..' segments" if not _valid_subdir(subdir)
+        else f"platforms {platforms!r} must be a subset of {list(CATALOG_PLATFORMS)}"
+        if any(p not in CATALOG_PLATFORMS for p in platforms)
         else None)
     if problem:
         logger.warning("Plugin catalog: %s: %s", label, problem)
@@ -166,9 +183,9 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
-        subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        subdir=subdir, docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
-        platforms=_str_list(data.get("platforms")),
+        platforms=platforms,
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
@@ -253,8 +270,11 @@ def _normalize_repo(url: str) -> str:
     if scp:
         host, path = scp.group(1), scp.group(2)
     elif "://" in text:
-        parts = urlsplit(text)
-        host, path = parts.hostname or "", parts.path
+        try:
+            parts = urlsplit(text)
+            host, path = parts.hostname or "", parts.path
+        except ValueError:  # unparseable authority: match on the raw text only
+            host, path = "", text
     else:
         host, path = "", text
     host = host.lower().removeprefix("www.")
@@ -335,6 +355,12 @@ def invalidate_live_cache_for_home(home: Path) -> None:
 _live_fetch_failed_until = 0.0
 
 
+def _live_doc(data: Any) -> Optional[dict[str, Any]]:
+    """*data* when it has the published shape (``{"entries": [...]}``), else ``None``: a cache written by
+    an older version or edited by hand must read as "no cache", not crash every caller that indexes it."""
+    return data if isinstance(data, dict) and isinstance(data.get("entries"), list) else None
+
+
 def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
     """A previously fetched copy still beats the in-tree one when the network is down — for
     :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
@@ -343,8 +369,8 @@ def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
     try:
         if not cache.is_file():
             return None
-        data = json.loads(cache.read_text(encoding="utf-8-sig"))
-        if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
+        data = _live_doc(json.loads(cache.read_text(encoding="utf-8-sig")))
+        if data is not None and time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
             data = {**data, "entries": []}
         return data
     except Exception:
@@ -361,7 +387,9 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8-sig"))
+            fresh = _live_doc(json.loads(cache.read_text(encoding="utf-8-sig")))
+            if fresh is not None:
+                return fresh
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:
@@ -376,7 +404,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
         if len(resp.content) > _MAX_LIVE_BYTES:
             raise ValueError("live catalog payload too large")
         data = resp.json()
-        if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        if _live_doc(data) is None:
             raise ValueError("unexpected live catalog payload")
         mkdir_under_hermes_home(cache.parent)
         # Atomic: a concurrent reader (gateway, TUI, a second CLI) must never see a half-written
@@ -482,9 +510,14 @@ def load_catalog_live() -> list[PluginCatalogEntry]:
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
     raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
-            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
-            for e in entries]
+    merged = [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+              else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
+              for e in entries]
+    if tree_is_newer:
+        # An entry merged after the doc was generated is not in the doc yet; the newer checkout supplies it.
+        live_names = {e.name for e in entries}
+        merged += [e for name, e in in_tree.items() if name not in live_names]
+    return merged
 
 
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the

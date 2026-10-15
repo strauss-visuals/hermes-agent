@@ -37,7 +37,7 @@ def catalog(monkeypatch):
     other = "windows" if here != "windows" else "macos"
     entries = [
         _entry("app", title="Fx App", platforms=[here],
-               description="Drives Fx. Disclosure: the tools change Fx settings; nothing leaves loopback. Needs Fx 2."),
+               description="Drives Fx. Disclosure: the tools change Fx settings; nothing leaves loopback. Later sentences are part of the disclosure too."),
         _entry("dashed", description="Pane. Disclosure \u2014 reads the cron file under HERMES_HOME."),
         _entry("broken", title="Broken"),
         _entry("elsewhere", platforms=[other]),
@@ -69,7 +69,8 @@ def test_row_shape_state_and_disclosure(catalog):
     rows = {row["name"]: row for row in presence_mod.presence_for(["app", "dashed", "broken"])}
 
     assert rows["app"] == {"name": "app", "title": "Fx App", "state": "missing_app", "sentence": "needs Fx App",
-                           "disclosure": "the tools change Fx settings; nothing leaves loopback."}
+                           "disclosure": "the tools change Fx settings; nothing leaves loopback. "
+                                         "Later sentences are part of the disclosure too."}
     assert rows["dashed"]["title"] == "dashed"
     assert rows["dashed"]["disclosure"] == "reads the cron file under HERMES_HOME."
     assert rows["dashed"]["state"] == "unknown"  # a manifest without a declared app
