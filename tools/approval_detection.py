@@ -75,14 +75,37 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # shutdown, DoS). Recoverable operations (git reset --hard, chmod -R 777, curl|sh) stay in
 # DANGEROUS_PATTERNS.
 
+# Option tokens for a command wrapper: flags that take ONE operand (`sudo -u root`, `env -u NAME`),
+# then any other dash token. Each iteration eats whole whitespace-delimited tokens and the loop is
+# possessive, so a long flag run cannot backtrack exponentially.
+def _wrapper_opts(operand_flags: str = "", long_operand_flags: str = "", extra: str = "") -> str:
+    alts = [extra] if extra else []
+    if operand_flags:
+        alts.append(rf'-[A-Za-z]*[{operand_flags}]\s+\S+\s+')
+    if long_operand_flags:
+        alts.append(rf'--(?:{long_operand_flags})\s+\S+\s+')
+    alts.append(r'-\S*\s+')
+    return '(?:' + '|'.join(alts) + ')*+'
+
+
+_WRAPPERS = (
+    r'(?:sudo|doas)\s+' + _wrapper_opts('ugCDhpRrTtU', 'user|group|chdir|host|prompt|role|type|chroot') +
+    r'|env\s+' + _wrapper_opts('uCS', extra=r'\w+=\S*\s+') +
+    r'|timeout\s+' + _wrapper_opts('sk', 'signal|kill-after') + r'[0-9.]+[smhd]?\s+' +
+    r'|(?:nice|ionice)\s+' + _wrapper_opts('nctp', 'adjustment|class|classdata') +
+    r'|(?:exec|nohup|setsid|time|command|builtin|busybox)\s+' + _wrapper_opts('a')
+)
+
 # Start-of-command position: start of string, newline, subshell opener ($( or backtick), optionally consuming
-# sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
-# 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
-# keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# sudo/doas/env/timeout/nice/exec/nohup/setsid/time/command wrappers (with their own flags and operands, so
+# `sudo -u root rm -rf /` and `timeout 5 rm -rf /` still anchor on `rm`). Keeps shutdown/reboot rules from firing
+# on "echo reboot" / "grep 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware
+# _mark_command_starts pass; keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# The command word may be a leading-backslash alias bypass (`\rm`) or a standard bin-dir path (`/bin/rm`).
 _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    rf'(?:(?:{_WRAPPERS})\s*)*+'  # optional wrappers, in any nesting order
+    r'(?:\\|(?:/usr)?(?:/local)?/s?bin/)?'  # optional \cmd or /bin/cmd spelling
 )
 
 
@@ -93,9 +116,13 @@ def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
     return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
 
 
-# Protected system roots whose recursive deletion has no recovery path.
-_HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
-                         r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*')
+# Redundant path tail the shell collapses: any run of `/` and `/.` components (`/etc/`, `/home//.`, `~/./`).
+# One `/` per iteration and possessive, so there is a single parse of any slash run.
+_PATH_SLACK = r'(?:/(?:\.(?=[/\s)`;|&"\']|$))?)*+'
+
+# Protected system roots whose recursive deletion has no recovery path. A trailing glob and slash slack
+# (`/etc/`, `/usr/*/`, `/home/.`) name the same directory, so they stay inside the floor.
+_HARDLINE_SYSTEM_DIRS = (r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)' + _PATH_SLACK + r'\**' + _PATH_SLACK)
 
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
@@ -109,9 +136,9 @@ HARDLINE_PATTERNS = [
     # "/.", "/./", "/../..", optional trailing glob). Each inter-slash segment must be exactly "."
     # or "..", so "/tmp", "/.ssh", even "/..." are literal dirs that fall through to the softer
     # DANGEROUS rules. The "/ \*" alt covers `rm -rf / *` (two args: "/" plus the glob).
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**' + _PATH_SLACK + r'|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:' + _PATH_SLACK + r'\**' + _PATH_SLACK + r')'), "recursive delete of home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.

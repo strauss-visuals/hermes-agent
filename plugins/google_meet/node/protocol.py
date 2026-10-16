@@ -10,6 +10,7 @@ disk on the server); mismatched tokens are rejected before dispatch.
 
 from __future__ import annotations
 
+import hmac
 import json
 import uuid
 from typing import Any, Dict, Tuple
@@ -20,6 +21,11 @@ VALID_REQUEST_TYPES = frozenset({"start_bot", "stop", "status", "transcript", "s
 
 def _nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
+
+
+def _tokens_match(given: str, expected: str) -> bool:
+    """Constant-time compare; ``surrogatepass`` keeps a lone-surrogate token from raising."""
+    return hmac.compare_digest(given.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
 
 
 def make_request(type: str, token: str, payload: dict[str, Any], req_id: str | None = None) -> dict[str, Any]:
@@ -78,6 +84,6 @@ def validate_request(msg: dict[str, Any], expected_token: str) -> tuple[bool, st
         (lambda: t in VALID_REQUEST_TYPES, f"unknown request type: {t!r}"),
         (lambda: _nonempty_str(msg.get("id")), "missing or non-string 'id'"),
         (lambda: _nonempty_str(token), "missing token"),
-        (lambda: token == expected_token, "token mismatch"),
+        (lambda: _tokens_match(token, expected_token), "token mismatch"),
         (lambda: isinstance(msg.get("payload"), dict), "payload must be a dict"))
     return next(((False, reason) for ok, reason in checks if not ok()), (True, ""))

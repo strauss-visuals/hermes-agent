@@ -29,7 +29,7 @@ from hermes_cli.plugin_validate_private_imports import check_private_imports
 from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
-_UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*\Z")
 # Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
 # Desktop settings renderer keys its field table on) — a private copy drifted and rejected ``secret``.
 _CONFIG_TYPES = frozenset(_CONFIG_SCHEMA_TYPES)

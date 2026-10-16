@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 ROUTER_DEFAULT_BASE_URL = "https://api.router.com/v1"
 
+#: Age past which the disk mirror still serves the hot path but triggers a background refresh.
+_DISK_TTL_SECONDS = 6 * 3600
+
 #: model id -> accepted effort levels. ``[]`` = model accepts NO reasoning
 #: fields; absent = unknown (callers keep their defaults).
 _efforts_cache: Optional[dict[str, list[str]]] = None

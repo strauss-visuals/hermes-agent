@@ -110,7 +110,9 @@ def presence(entry: Any) -> Presence:
     manifest = _pinned_manifest(entry.repo, entry.sha, entry.subdir)
     if not manifest:
         return UNKNOWN
-    raw_servers = (manifest.get("extensions") or {}).get("com.nousresearch.hermes", {}).get("servers") or {}
+    extensions = manifest.get("extensions")
+    hermes_ext = extensions.get("com.nousresearch.hermes") if isinstance(extensions, dict) else None
+    raw_servers = hermes_ext.get("servers") if isinstance(hermes_ext, dict) else None
     if not isinstance(raw_servers, dict) or not raw_servers:
         return UNKNOWN
     try:
@@ -120,8 +122,23 @@ def presence(entry: Any) -> Presence:
         return UNKNOWN
     title = getattr(entry, "title", "") or entry.name
     rank = {"missing_app": 0, "app_not_running": 1, "present": 2, "unknown": 3}
-    found = [_server_presence(d.declaration, d.liveness, title) for d in declarations.values()]
+    try:
+        found = [_server_presence(d.declaration, d.liveness, title) for d in declarations.values()]
+    except Exception as exc:  # a resolver/probe failure is "unknown", never an error for the whole card
+        logger.debug("plugin catalog presence: %s probe failed: %s", entry.name, exc, exc_info=True)
+        return UNKNOWN
     return min(found, key=lambda p: rank[p.state]) if found else UNKNOWN
+
+
+def _probe_all(entries: list) -> list[Presence]:
+    """``presence`` for every entry, in order. Each manifest read is bounded by _TIMEOUT; in parallel the
+    whole answer waits one timeout, not one per entry."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not entries:
+        return []
+    with ThreadPoolExecutor(max_workers=len(entries)) as pool:
+        return list(pool.map(presence, entries))
 
 
 def _onboarding_catalog() -> list:
@@ -143,26 +160,21 @@ def onboarding_names() -> list[str]:
 def onboarding_entries() -> list[dict[str, Any]]:
     """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
     each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
-    rows = []
-    for entry in _onboarding_catalog():
-        found = presence(entry)
-        rows.append({
-            "name": entry.name,
-            "title": entry.title or entry.name,
-            "description": _first_sentence(entry.description),
-            "tier": entry.tier,
-            "platforms": list(entry.platforms),
-            "app_state": found.state,
-            "sentence": found.sentence,
-        })
-    return rows
+    entries = _onboarding_catalog()
+    return [{
+        "name": entry.name,
+        "title": entry.title or entry.name,
+        "description": _first_sentence(entry.description),
+        "tier": entry.tier,
+        "platforms": list(entry.platforms),
+        "app_state": found.state,
+        "sentence": found.sentence,
+    } for entry, found in zip(entries, _probe_all(entries))]
 
 
 def presence_for(names: list[str]) -> list[dict[str, Any]]:
     """The named catalog plugins this OS runs, in the order asked, each with its app state and the
     catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""
-    from concurrent.futures import ThreadPoolExecutor
-
     from hermes_cli.plugin_catalog import load_catalog_live
     from hermes_cli.plugins_cmd_catalog import normalized_platforms
     from hermes_platform.host.facts import os_family
@@ -171,20 +183,18 @@ def presence_for(names: list[str]) -> list[dict[str, Any]]:
     by_name = {entry.name: entry for entry in load_catalog_live()}
     entries = [by_name[name] for name in dict.fromkeys(names) if name in by_name
                and (not by_name[name].platforms or here in normalized_platforms(by_name[name].platforms))]
-    if not entries:
-        return []
-    # Each manifest read is bounded by _TIMEOUT; in parallel the whole answer waits one timeout, not one per name.
-    with ThreadPoolExecutor(max_workers=len(entries)) as pool:
-        found = list(pool.map(presence, entries))
+    found = _probe_all(entries)
     return [{"name": entry.name, "title": entry.title or entry.name, "state": state.state,
              "sentence": state.sentence, "disclosure": _disclosure(entry.description)}
             for entry, state in zip(entries, found)]
 
 
 def _disclosure(text: str) -> str:
-    """The sentence after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent."""
+    """Everything after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent.
+    Not truncated to one sentence: catalog rule 13 puts the risky behaviour in the disclosure, and the
+    later sentences are where network egress and third-party hosts are named."""
     match = _DISCLOSURE.search(" ".join(str(text or "").split()))
-    return _first_sentence(match.group(1)) if match else ""
+    return match.group(1) if match else ""
 
 
 def _first_sentence(text: str) -> str:
