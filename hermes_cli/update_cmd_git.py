@@ -576,6 +576,12 @@ def _portable_git_candidates() -> list:
     return candidates
 
 
+# Where Git for Windows installs, and the MSYS2 environment directory it keeps its binaries under:
+# ``ucrt64`` since 2.5x, ``clangarm64`` on ARM, ``mingw64``/``mingw32`` before that.
+_PROGRAM_FILES_DIRS = (r"C:\Program Files", r"C:\Program Files (x86)")
+_GIT_FOR_WINDOWS_ENV_DIRS = ("ucrt64", "clangarm64", "mingw64", "mingw32")
+
+
 def _locate_real_git() -> Optional[Path]:
     """Find a real Git-for-Windows ``git-core/git.exe`` (standard locations + managed PortableGit) that runs
     without the trampoline guard. None when nothing suits — callers keep the broken command and let the
@@ -587,8 +593,8 @@ def _locate_real_git() -> Optional[Path]:
     """
     candidates = [
         Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
-        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
-        for arch in ("clangarm64", "mingw64", "mingw32")
+        for base in _PROGRAM_FILES_DIRS
+        for arch in _GIT_FOR_WINDOWS_ENV_DIRS
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
