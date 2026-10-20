@@ -1,0 +1,33 @@
+name: Diag tests-js
+on:
+  push:
+    branches: [ci/diag-tests-js]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - name: Set up the locked JS build toolchain
+        id: node
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+      - name: Install zsh and a virtual display for Electron
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+      - name: tests-js check (typecheck, test, lint)
+        run: |
+          cd tests-js
+          npm run typecheck 2>&1 | tail -40 || true
+          npm run test 2>&1 | grep -v ExperimentalWarning | grep -v "trace-warnings" | tail -120 || true
+          npm run lint 2>&1 | tail -40 || true
