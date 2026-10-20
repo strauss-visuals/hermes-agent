@@ -200,7 +200,11 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
         env_vars = list(mdev_info.env)
-        for ev in ov.extra_env_vars:
+        # models.dev names the key its own way and drifts under a plugin (CommandCode lists CMD_API_KEY
+        # while its profile reads COMMANDCODE_API_KEY); the profile's key vars are what the plugin
+        # actually reads, so credential detection must recognise them too. models.dev keeps priority.
+        plugin = _plugin_profile_pdef(canonical)
+        for ev in (*ov.extra_env_vars, *(plugin.api_key_env_vars if plugin else ())):
             if ev not in env_vars:
                 env_vars.append(ev)
         return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
