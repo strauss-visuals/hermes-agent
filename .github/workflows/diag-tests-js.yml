@@ -30,7 +30,8 @@ jobs:
           cd tests-js
           for i in 1 2 3 4; do (timeout 900 sh -c 'while :; do :; done' &) ; done
           for step in typecheck test lint; do
-            npm run $step > /tmp/$step.log 2>&1; echo "== $step exit $?"
-            grep -v ExperimentalWarning /tmp/$step.log | grep -v trace-warnings | grep -nE "FAIL|Error|error|✗|×|expected|Timeout|timed out" | head -40
+            rc=0; npm run $step > /tmp/$step.log 2>&1 || rc=$?; echo "== $step exit $rc"
+            grep -v ExperimentalWarning /tmp/$step.log | grep -v trace-warnings | grep -nE "FAIL|Error|error|✗|×|expected|Timeout|timed out" | head -40 || true
+            if [ $rc != 0 ]; then grep -v ExperimentalWarning /tmp/$step.log | grep -v trace-warnings | tail -60; fi
           done
           exit 0
