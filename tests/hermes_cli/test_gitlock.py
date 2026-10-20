@@ -472,7 +472,8 @@ def test_a_git_elsewhere_exiting_mid_scan_is_gone_not_a_hidden_holder(repo: Path
     from tests.waiting import wait_until
 
     other = tmp_path / "other"
-    shutil.copytree(repo, other)
+    # git's detached post-commit maintenance takes and drops objects/maintenance.lock mid-copy.
+    shutil.copytree(repo, other, ignore=shutil.ignore_patterns("*.lock"))
     lock = repo / ".git" / "index.lock"
     lock.write_bytes(b"")  # a killed git's: nothing holds it
     marker = "hermes.test=exits-mid-scan"
