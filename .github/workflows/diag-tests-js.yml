@@ -25,9 +25,12 @@ jobs:
       - uses: ./.github/actions/retry
         with:
           command: npm ci
-      - name: tests-js check (typecheck, test, lint)
+      - name: tests-js check under load
         run: |
           cd tests-js
-          npm run typecheck 2>&1 | tail -40 || true
-          npm run test 2>&1 | grep -v ExperimentalWarning | grep -v "trace-warnings" | tail -120 || true
-          npm run lint 2>&1 | tail -40 || true
+          for i in 1 2 3 4; do (timeout 900 sh -c 'while :; do :; done' &) ; done
+          for step in typecheck test lint; do
+            npm run $step > /tmp/$step.log 2>&1; echo "== $step exit $?"
+            grep -v ExperimentalWarning /tmp/$step.log | grep -v trace-warnings | grep -nE "FAIL|Error|error|✗|×|expected|Timeout|timed out" | head -40
+          done
+          exit 0
