@@ -196,6 +196,9 @@ jobs:
           # starves cold child startup before the fixture's idle deadline.
           # Half the cores: 16 on the old 32-core runner, 2 on the 4-vCPU standard ones.
           HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && '2' || '' }}
+          # Each desktop-update file drives dozens of real PowerShell hand-offs; on a 4-vCPU
+          # runner they outrun the 300s default while every test in them still passes.
+          HERMES_TEST_FILE_TIMEOUT: ${{ matrix.marker == 'windows' && '900' || '300' }}
           HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
