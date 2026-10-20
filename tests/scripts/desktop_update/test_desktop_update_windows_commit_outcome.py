@@ -93,7 +93,13 @@ def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
-        out, _ = proc.communicate()
+        try:
+            out, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            # An orphaned descendant (the hung CLI stand-in) still holds the
+            # inherited stdout pipe; an unbounded read would outlive the file timeout.
+            proc.stdout.close()
+            out = '<output unavailable: a descendant kept the pipe open>'
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     argv = [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] if calls.exists() else []
     result_path = home / '.hermes-update-result.json'
