@@ -1,0 +1,23 @@
+name: Diag Windows git layout
+on:
+  push:
+    branches: [ci/diag-win-git]
+jobs:
+  diag:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Where is git
+        shell: pwsh
+        run: |
+          where.exe git
+          git --version
+          git --exec-path
+          foreach ($base in 'C:\Program Files', 'C:\Program Files (x86)') {
+            foreach ($arch in 'clangarm64', 'mingw64', 'mingw32') {
+              $p = Join-Path $base "Git\$arch\libexec\git-core\git.exe"
+              "$p exists=$(Test-Path $p)"
+            }
+          }
+          Get-ChildItem 'C:\Program Files\Git' -Directory | Select-Object -ExpandProperty Name
+          Get-ChildItem 'C:\Program Files\Git' -Recurse -Filter git.exe -ErrorAction SilentlyContinue | Select-Object FullName, Length
