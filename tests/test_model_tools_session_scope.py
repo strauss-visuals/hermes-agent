@@ -71,7 +71,7 @@ def test_explicit_empty_toolsets_deny_all_without_a_plugin_hook(tool_fixture):
 
 
 def test_explicit_disabled_toolset_wins_over_enabled(tool_fixture):
-    allowed, rejected, seen = tool_fixture
+    _allowed, rejected, seen = tool_fixture
     result = call(rejected, ["scoped_reader", "scope_other"], disabled=["scope_other"])
     assert "not available in this session" in result
     assert seen == []
