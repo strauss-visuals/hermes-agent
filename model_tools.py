@@ -870,6 +870,41 @@ def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
+
+def _toolset_execution_scope_error(
+    function_name: str, enabled_toolsets: Optional[list[str]],
+    disabled_toolsets: Optional[list[str]],
+) -> Optional[str]:
+    """Deny direct dispatch outside an explicit session toolset selection.
+
+    A model-visible schema filter is not a security boundary; this is an
+    independent accident-prevention gate. In particular, a missing plugin
+    hook must not make an unrelated registered handler executable.
+    """
+    if enabled_toolsets is None:
+        return None  # Legacy unscoped callers retain their existing behavior.
+    try:
+        selected = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True)
+        if function_name in selected:
+            return None
+        from tools.connectors import is_connector_name
+        if is_connector_name(function_name) and "manage_connections" in selected:
+            return None  # The connector's separate authorization still applies.
+        from tools.tool_search import is_bridge_tool
+        if is_bridge_tool(function_name):
+            # Bridges must actually be model-visible for the session; an
+            # unadvertised tool_call must not bypass tools.tool_search: off.
+            visible = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=True,
+            )
+            if any(d.get("function", {}).get("name") == function_name for d in visible):
+                return None
+    except Exception:
+        logger.exception("Unable to verify session toolset dispatch scope")
+        return tool_error("Tool unavailable: session scope verification failed.")
+    return tool_error("Tool is not available in this session.")
+
+
 def handle_function_call(
     function_name: str, function_args: dict[str, Any], task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None, session_id: Optional[str] = None, turn_id: Optional[str] = None,
@@ -883,8 +918,9 @@ def handle_function_call(
     task_id isolates terminal/browser sessions; user_task feeds browser_snapshot.
     enabled_tools picks execute_code's sandbox tools (default: the process-global
     ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
-    it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    it (single-fire contract). With explicit enabled_toolsets, direct dispatch
+    and the Tool Search bridge are both limited to that session's toolsets.
+    This in-process gate is defense-in-depth, not OS containment.
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -899,6 +935,10 @@ def handle_function_call(
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result
+
+    scope_error = _toolset_execution_scope_error(function_name, enabled_toolsets, disabled_toolsets)
+    if scope_error is not None:
+        return _emit(scope_error, status="blocked", error_type="tool_scope_block")
 
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit

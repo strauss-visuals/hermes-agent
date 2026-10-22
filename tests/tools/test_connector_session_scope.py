@@ -5,17 +5,19 @@ import json
 import pytest
 
 
-@pytest.mark.parametrize("enabled,disabled,allowed", [
-    ([], [], False),
-    (["safe"], [], False),
-    (["hermes-webhook"], [], False),
-    (["connections"], [], True),
-    (["hermes-cli"], ["connections"], False),
-    (["safe"], ["connections"], False),
-    (None, ["connections"], False),
-    (None, [], True),
+@pytest.mark.parametrize("enabled,disabled,allowed,bridge_visible", [
+    ([], [], False, False),
+    (["safe"], [], False, False),
+    (["hermes-webhook"], [], False, False),
+    (["connections"], [], True, True),
+    (["hermes-cli"], ["connections"], False, True),
+    (["safe"], ["connections"], False, False),
+    (None, ["connections"], False, True),
+    (None, [], True, True),
 ])
-def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, enabled, disabled, allowed):
+def test_connector_scope_controls_schema_discovery_and_execution(
+    monkeypatch, enabled, disabled, allowed, bridge_visible,
+):
     import model_tools
     from tools.connectors import managed
     from tools.connectors.gateway import bridge, config
@@ -56,8 +58,16 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
     def call(tool, args):
         return json.loads(model_tools.handle_function_call(tool, args, **scope))
 
-    assert (name in call("tool_search", {"queries": ["send mail"]})["tools"]) is allowed
-    assert (name in call("tool_describe", {"names": [name]})["tools"]) is allowed
+    search = call("tool_search", {"queries": ["send mail"]})
+    describe = call("tool_describe", {"names": [name]})
+    if bridge_visible:
+        # The bridge may be exposed while connectors remain outside the grant.
+        assert (name in search["tools"]) is allowed
+        assert (name in describe["tools"]) is allowed
+    else:
+        # Explicit toolsets without an advertised bridge must refuse discovery.
+        assert "not available in this session" in json.dumps(search)
+        assert "not available in this session" in json.dumps(describe)
     result = call("tool_call", {"calls": [{"name": name, "arguments": {}}]})
     direct = call(name, {})
     status = call("manage_connections", {"action": "status"})
