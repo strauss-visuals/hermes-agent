@@ -1,0 +1,11 @@
+name: Diag control
+on:
+  push:
+    branches: [ci/diag-actions-policy]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
