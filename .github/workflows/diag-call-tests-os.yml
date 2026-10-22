@@ -1,0 +1,10 @@
+name: Diag call tests-os
+on:
+  push:
+    branches: [ci/diag-actions-policy]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  call:
+    uses: ./.github/workflows/tests-os.yml

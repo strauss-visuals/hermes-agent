@@ -1,0 +1,10 @@
+name: Diag call supply-chain-audit
+on:
+  push:
+    branches: [ci/diag-actions-policy]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  call:
+    uses: ./.github/workflows/supply-chain-audit.yml

@@ -1,0 +1,10 @@
+name: Diag call lazy-deps-guard
+on:
+  push:
+    branches: [ci/diag-actions-policy]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  call:
+    uses: ./.github/workflows/lazy-deps-guard.yml

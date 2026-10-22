@@ -1,0 +1,10 @@
+name: Diag call e2e-desktop-core
+on:
+  push:
+    branches: [ci/diag-actions-policy]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  call:
+    uses: ./.github/workflows/e2e-desktop-core.yml
