@@ -10,10 +10,10 @@ name: Nix flake check
 # in progress. One slow advisory job in the CI lane blocks every rerun of the
 # fast required jobs beside it. A separate run reruns and cancels on its own.
 
+# No pull_request/push triggers on this fork: the build needs a 32-core runner label that
+# has no runners here, so every run sat queued. Stable releases still call it.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
   workflow_call:
     inputs:
       commit:

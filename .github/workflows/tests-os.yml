@@ -80,26 +80,10 @@ jobs:
     timeout-minutes: ${{ matrix.timeout || 30 }}
     strategy:
       fail-fast: false
+      # Pull requests run the Windows x64 leg only; macOS (two slices) and Windows arm64 run
+      # on pushes to main, tags and manual dispatch. All four on every PR cost ~50 runner-min.
       matrix:
-        include:
-          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
-          # ~7.5 min and became the slowest required job once the Linux suite split.
-          - name: macOS-only tests (1/2)
-            runner: macos-latest
-            marker: macos
-            slice: 1/2
-          - name: macOS-only tests (2/2)
-            runner: macos-latest
-            marker: macos
-            slice: 2/2
-          - name: Windows-only tests
-            runner: windows-latest
-            marker: windows
-            timeout: 90
-          - name: Windows-only tests (arm64)
-            runner: windows-11-arm
-            marker: windows
-            timeout: 90
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"Windows-only tests","runner":"windows-latest","marker":"windows","timeout":90}]' || '[{"name":"macOS-only tests (1/2)","runner":"macos-latest","marker":"macos","slice":"1/2"},{"name":"macOS-only tests (2/2)","runner":"macos-latest","marker":"macos","slice":"2/2"},{"name":"Windows-only tests","runner":"windows-latest","marker":"windows","timeout":90},{"name":"Windows-only tests (arm64)","runner":"windows-11-arm","marker":"windows","timeout":90}]') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
