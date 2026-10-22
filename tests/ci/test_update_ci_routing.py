@@ -197,7 +197,7 @@ def _selected_test_files(node: dict, name: str, *, windows_only: bool = False) -
     if "shard" in matrix:
         cells = [{"shard": s} for s in gha.render(matrix["shard"], ctx)]
     else:
-        cells = matrix.get("include", [{}])
+        cells = gha.render(matrix.get("include", [{}]), ctx)
     if windows_only:
         cells = [cell for cell in cells if cell.get("marker") == "windows"]
     assert cells, f"{name}: empty matrix"
