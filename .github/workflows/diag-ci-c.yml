@@ -1,4 +1,4 @@
-name: Diag ci-A as-is
+name: Diag ci-C full trigger block
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally
 # calls the sub-workflows that a PR can actually affect. A final
@@ -15,8 +15,32 @@ name: Diag ci-A as-is
 # main-only automation uses protected environments in its own workflows.
 
 on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
+        required: false
+        type: boolean
+        default: false
+      strict_acceptance:
+        description: "Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py)."
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      release:
+        description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
+        required: false
+        type: boolean
+        default: false
+  pull_request:
   push:
-    branches: [ci/diag-actions-policy]
+    branches: [main, ci/diag-actions-policy]
 
 permissions:
   contents: read

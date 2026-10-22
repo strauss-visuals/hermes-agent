@@ -1,4 +1,4 @@
-name: Diag ci-B no e2e-desktop
+name: Diag ci-D no dispatch
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally
 # calls the sub-workflows that a PR can actually affect. A final
@@ -15,8 +15,20 @@ name: Diag ci-B no e2e-desktop
 # main-only automation uses protected environments in its own workflows.
 
 on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      release:
+        description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
+        required: false
+        type: boolean
+        default: false
+  pull_request:
   push:
-    branches: [ci/diag-actions-policy]
+    branches: [main, ci/diag-actions-policy]
 
 permissions:
   contents: read
@@ -198,6 +210,26 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
+  e2e-desktop:
+    name: Desktop E2E
+    needs: detect
+    # python_prod (not python): the Playwright suite exercises the built app
+    # + `hermes serve` backend, which never import anything under tests/.
+    # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
+    # single job in the workflow — while still running the full pytest lanes.
+    #
+    # Re-disabled (Sep 2026): the Sep 1 re-enable is still incredibly flaky.
+    # Keep this a bare `if: false`. The earlier
+    # `${{ false && (... || ...) }}` form on this reusable-workflow job made
+    # GitHub's workflow parser fail at startup ("An unexpected error has
+    # occurred") — every ci.yaml run repo-wide dispatched 0 jobs from
+    # 24f5a60ed1 until this line changed. To re-enable, restore:
+    #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    if: false
+    uses: ./.github/workflows/e2e-desktop.yml
+    with:
+      commit: ${{ inputs.commit }}
+
   e2e-desktop-core:
     name: Desktop core E2E
     needs: detect
@@ -375,6 +407,7 @@ jobs:
       - rust-tests
       - remote-backends
       - bootstrap-installer
+      - e2e-desktop
       - e2e-desktop-core
       - e2e-desktop-update
       - docs-site
