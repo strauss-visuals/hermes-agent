@@ -26,6 +26,7 @@ def test_emitter_event_stream_is_valid_jsonl(capsys):
     emitter.on_tool_progress("tool.completed", "read_file", None, None, tool_call_id="call-b", result="y")
     emitter.on_tool_progress("tool.completed", "read_file", None, None, tool_call_id="call-a", duration=0.5,
                              is_error=False, result="x" * 6000)
+    assert emitter._tool_started == {}  # explicit durations must retire their canonical IDs
     code = emitter.emit_result({"final_response": "", "failed": True, "error": "boom", "input_tokens": 3}, exit_code=0)
 
     events = _events(capsys)
@@ -41,6 +42,17 @@ def test_emitter_event_stream_is_valid_jsonl(capsys):
     assert code == 1 and events[-1] == {**events[-1], "exit_code": 1, "error": "boom", "session_id": "s-1"}
     assert events[-1]["tokens"]["input"] == 3
     assert all("timestamp" in e for e in events)
+
+
+def test_tool_explicit_zero_duration_retires_call_id(capsys):
+    emitter = StreamJsonEmitter(model="test", session_id="s")
+    emitter.on_tool_progress("tool.started", "read_file", tool_call_id="call-zero")
+    emitter.on_tool_progress("tool.completed", "read_file", tool_call_id="call-zero", duration=0, result="ok")
+    assert emitter._tool_started == {}
+    result = _events(capsys)[-1]
+    assert result["type"] == "tool_result"
+    assert result["tool_call_id"] == "call-zero"
+    assert result["duration_ms"] == 0
 
 
 def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=True):
