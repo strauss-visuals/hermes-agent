@@ -784,8 +784,10 @@ class TestImageApiSurface:
         assert result["error_type"] == "auth_error"
         assert "_retryable" not in result
 
-    def test_catalog_models_are_offered_only_by_openrouter(self):
-        from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
+    def test_catalog_models_are_offered_only_by_openrouter(self, monkeypatch):
+        from plugins.image_gen.openrouter import OpenRouterCompatImageProvider, _IMAGE_API_MODELS, _build_providers
+        # Exercise the offline snapshot deterministically, independent of live provider catalogs.
+        monkeypatch.setattr(OpenRouterCompatImageProvider, "_credentials", lambda self: (None, None))
 
         by_name = {p.name: p for p in _build_providers()}
         openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
