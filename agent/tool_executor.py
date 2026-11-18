@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import inspect
 import json
 from pathlib import Path
 import logging
@@ -1004,6 +1005,22 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
         logging.debug("%s callback error: %s", label, callback_error)
 
 
+def _project_tool_progress(callback, *args, tool_call_id: str, **kwargs) -> None:
+    """Pass the canonical ID to consumers that accept the added metadata."""
+    if not callback:
+        return
+    try:
+        inspect.signature(callback).bind(*args, tool_call_id=tool_call_id, **kwargs)
+    except (TypeError, ValueError):
+        # Legacy or uninspectable subscribers keep the original parameters.
+        pass
+    except Exception:
+        logger.debug("Tool progress callback signature lookup failed", exc_info=True)
+    else:
+        kwargs["tool_call_id"] = tool_call_id
+    _safe_callback(callback, "Tool progress", *args, **kwargs)
+
+
 def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
@@ -1026,7 +1043,10 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
-            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
+            _project_tool_progress(
+                agent.tool_progress_callback, "tool.started",
+                function_name, preview, display_args, tool_call_id=tool_call_id,
+            )
     _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
     if not agent._checkpoint_mgr.enabled:
@@ -1163,9 +1183,9 @@ def _commit_tool_result(
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
         # reconstruct the result even if the UI bridge dies mid-projection.
-        _safe_callback(
-            agent.tool_progress_callback, "Tool progress",
-            "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
+        _project_tool_progress(
+            agent.tool_progress_callback, "tool.completed", function_name, None, None,
+            tool_call_id=tool_call_id, duration=tool_duration, is_error=is_error, result=function_result,
         )
     if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
         agent._trim_after_tool_batch = True

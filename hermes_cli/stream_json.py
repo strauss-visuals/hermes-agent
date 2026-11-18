@@ -72,7 +72,10 @@ class StreamJsonEmitter:
                 payload["input"] = args
             self._emit(payload)
         elif event_type == "tool.completed":
-            duration = kwargs.get("duration") or (time.time() - self._tool_started.pop(key, time.time()))
+            started_at = self._tool_started.pop(key, None)
+            duration = kwargs.get("duration")
+            if duration is None:
+                duration = time.time() - started_at if started_at is not None else 0.0
             output = str(kwargs.get("result") or "")
             self._emit({"type": "tool_result", "name": name,
                         **({"tool_call_id": kwargs["tool_call_id"]} if kwargs.get("tool_call_id") else {}),
