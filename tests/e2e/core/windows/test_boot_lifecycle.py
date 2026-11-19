@@ -140,7 +140,21 @@ def test_serve_tree_kill_leaves_no_orphans_and_reboots(tmp_path: Path) -> None:
             assert first.pid in owned, f"ownership scan cannot see serve pid {first.pid} (saw {owned})"
 
             killed = taskkill_tree(first.pid)
-            assert killed.returncode == 0, killed.stderr
+            if killed.returncode != 0:
+                # Windows taskkill /T /F can return 255 when one member exits
+                # between its process enumeration and termination. Require both
+                # proof that another tree member was killed and the exact
+                # already-exited diagnostic; access-denied and other errors
+                # remain failures. The ownership, port and reboot checks below
+                # still prove the Desktop quit contract independently.
+                ended_during_kill = (
+                    killed.returncode == 255
+                    and b"SUCCESS: The process with PID" in killed.stdout
+                    and b"There is no running instance of the task" in killed.stderr
+                )
+                assert ended_during_kill, (
+                    f"taskkill failed rc={killed.returncode}: "
+                    f"stdout={killed.stdout!r}, stderr={killed.stderr!r}")
             # Ownership, not ancestry: anything the backend spawned detached (a broken
             # parent link taskkill /T cannot follow) still carries this profile's
             # HERMES_HOME / cwd, and is an orphan the Desktop quit leaves behind.
