@@ -147,10 +147,29 @@ def test_serve_tree_kill_leaves_no_orphans_and_reboots(tmp_path: Path) -> None:
                 # already-exited diagnostic; access-denied and other errors
                 # remain failures. The ownership, port and reboot checks below
                 # still prove the Desktop quit contract independently.
+                diagnostics = [
+                    line.strip() for line in killed.stderr.decode("utf-8", errors="replace").splitlines()
+                    if line.strip()
+                ]
+                # A partial tree kill can report success for one PID alongside
+                # an access-denied/error for another. Reject mixed diagnostics:
+                # the only acceptable nonzero result is one or more complete
+                # pairs stating that an enumerated PID already exited.
+                only_exited_messages = (
+                    bool(diagnostics) and len(diagnostics) % 2 == 0
+                    and all(
+                        re.fullmatch(
+                            r"ERROR: The process with PID \d+ \(child process of PID \d+\) "
+                            r"could not be terminated\.", diagnostics[i]
+                        )
+                        and diagnostics[i + 1] == "Reason: There is no running instance of the task."
+                        for i in range(0, len(diagnostics), 2)
+                    )
+                )
                 ended_during_kill = (
                     killed.returncode == 255
                     and b"SUCCESS: The process with PID" in killed.stdout
-                    and b"There is no running instance of the task" in killed.stderr
+                    and only_exited_messages
                 )
                 assert ended_during_kill, (
                     f"taskkill failed rc={killed.returncode}: "
