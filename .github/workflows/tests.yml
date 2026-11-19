@@ -392,7 +392,10 @@ jobs:
               f97608f178d1ffeca59860195ab7da295f7c8e5f
             # Match the N-1 test fixture lookup from HEAD~1. Full history is
             # required and provided by checkout fetch-depth: 0 above.
-            git merge-base --is-ancestor 'refs/tags/v2026.9.24^{commit}' HEAD~1
+            # Check HEAD, not HEAD~1: routing replay harnesses use a synthetic
+            # one-commit checkout, while the real Git upgrade test itself
+            # still verifies N-1 against HEAD~1 with full history.
+            git merge-base --is-ancestor 'refs/tags/v2026.9.24^{commit}' HEAD
           fi
           source .venv/bin/activate
           if [ "$SHARD" = core ]; then
