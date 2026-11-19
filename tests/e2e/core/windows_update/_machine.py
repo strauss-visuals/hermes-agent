@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -539,6 +540,20 @@ class Machine:
                                     ignore=shutil.ignore_patterns("*.db", "*.db-*"))
             (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
             (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
+
+        # The CI suite runs several full installs per job. Fake profiles were
+        # formerly left in C:\\Users even after their evidence was copied to D:,
+        # exhausting C: after ~8 journeys (30 GB free -> <1 GB). Only remove
+        # this machine's synthetic, randomly suffixed test profile. Never touch
+        # an actual user's profile or the machine's diagnostic artifacts.
+        if self.profiles_root is not None and os.environ.get(OPT_IN_ENV) == "1":
+            profile = self.profile
+            if (profile.parent.resolve() != self.profiles_root.resolve()
+                    or not re.fullmatch(r"(?:[^\\/]+ )?hermes-e2e-[0-9a-f]{4}", profile.name)
+                    or profile.is_symlink()):
+                raise RuntimeError(f"refusing unsafe E2E profile cleanup: {profile}")
+            if profile.exists():
+                shutil.rmtree(profile)
 
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
