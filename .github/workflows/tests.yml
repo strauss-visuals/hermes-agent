@@ -384,7 +384,7 @@ jobs:
         run: |
           set -euo pipefail
           # The private fork carries upstream Git history but not upstream
-          # release tag refs. Fetch exactly one authenticated historical tag
+          # release tag refs. Fetch exactly one pinned historical tag
           # into this disposable runner checkout, never publish a tag.
           git fetch --no-tags https://github.com/NousResearch/hermes-agent.git \
             '+refs/tags/v2026.9.24:refs/tags/v2026.9.24'
