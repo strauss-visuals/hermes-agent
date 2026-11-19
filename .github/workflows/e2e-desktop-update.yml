@@ -35,7 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     # Required whenever the e2e_desktop_update lane fires (see ci.yaml): it was
-    # advisory until it proved stable, and every main push shard since has passed.
+    # advisory until stable on larger runners; standard-runner reliability is now
+    # qualified by forced full E2E CI rather than inherited from older runs.
     strategy:
       fail-fast: false
       # One install per shard (every spec restores it; paths are baked in, so
