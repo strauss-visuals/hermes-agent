@@ -78,6 +78,7 @@ CANONICAL_URLS = (
     "git@github.com:NousResearch/hermes-agent.git",
 )
 NEXT_MARKER = ".hermes-e2e-next"
+PROFILE_OWNER_MARKER = ".hermes-e2e-owner"
 # Captured before any machine strips PATH: harness plumbing (serve.git, rev-parse) only.
 REAL_GIT = shutil.which("git")
 
@@ -157,6 +158,7 @@ class Machine:
     _seq: int = 0
     _spawned: list[subprocess.Popen] = field(default_factory=list)
     _lock_depth: int = 0
+    _profile_token: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
     timings: list[tuple[str, float]] = field(default_factory=list)
 
     # -- layout ---------------------------------------------------------------
@@ -220,6 +222,13 @@ class Machine:
     def stage(self) -> None:
         """serve.git at HEAD (+ NEXT in its object store), the URL redirect, a seeded home."""
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.profiles_root is not None:
+            # Never adopt an existing C:\\Users profile on a suffix collision.
+            # Exclusive creation and a per-machine token prove cleanup ownership.
+            if os.environ.get(OPT_IN_ENV) != "1":
+                raise RuntimeError("fake Windows user profiles require explicit E2E opt-in")
+            self.profile.mkdir(parents=True, exist_ok=False)
+            (self.profile / PROFILE_OWNER_MARKER).write_text(self._profile_token, encoding="ascii")
         self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD")
         harness_git("clone", "--bare", "--quiet", str(REPO_ROOT), str(self.serve))
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.head)
@@ -549,10 +558,14 @@ class Machine:
         if self.profiles_root is not None and os.environ.get(OPT_IN_ENV) == "1":
             profile = self.profile
             if (profile.parent.resolve() != self.profiles_root.resolve()
-                    or not re.fullmatch(r"(?:[^\\/]+ )?hermes-e2e-[0-9a-f]{4}", profile.name)
-                    or profile.is_symlink()):
+                    or not re.fullmatch(r"(?:[^\\/]+ )?hermes-e2e-[0-9a-f]{12}", profile.name)
+                    or profile.is_symlink() or profile.is_junction()):
                 raise RuntimeError(f"refusing unsafe E2E profile cleanup: {profile}")
             if profile.exists():
+                marker = profile / PROFILE_OWNER_MARKER
+                if (marker.is_symlink() or marker.is_junction()
+                        or marker.read_text(encoding="ascii") != self._profile_token):
+                    raise RuntimeError(f"refusing unowned E2E profile cleanup: {profile}")
                 shutil.rmtree(profile)
 
 
@@ -561,7 +574,7 @@ def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
     """A staged machine. Its work dir (serve.git, transcripts) lives under
     ``HERMES_E2E_MACHINE_ROOT`` (else ``tmp_root``); its user profile under
     ``HERMES_E2E_PROFILES_ROOT`` (CI: ``C:\\Users``), named ``[<person> ]hermes-e2e-<id>``."""
-    sfx = uuid.uuid4().hex[:4]
+    sfx = uuid.uuid4().hex[:12]
     base = Path(os.environ.get("HERMES_E2E_MACHINE_ROOT") or tmp_root)
     profiles = os.environ.get("HERMES_E2E_PROFILES_ROOT")
     name = f"{person} hermes-e2e-{sfx}" if person else f"hermes-e2e-{sfx}"
