@@ -70,6 +70,12 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
+      - name: Record free disk space before Windows install E2E
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+            Select-Object DeviceID, Size, FreeSpace | Format-Table -AutoSize
+
       - name: Run Windows install + update E2E
         shell: bash
         run: |
@@ -85,8 +91,10 @@ jobs:
           HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
           HERMES_E2E_PROFILES_ROOT: C:\Users
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
-          # Run every journey, but bound parallel installers on 4-vCPU standard runners.
-          HERMES_TEST_WORKERS: '3'
+          # Run every journey, but cap concurrent full clones and fake user profiles.
+          # Three simultaneously filling C: exhausted hosted disk (ENOSPC in job 135248101031);
+          # keep all tests and assertions while using two installer process trees.
+          HERMES_TEST_WORKERS: '2'
           # test_crash_cells.py runs its whole journey (install, gateway phase, six crash cells)
           # inside one file: ~2,100 s on a normal runner, past 2,400 s on a slow one.
           HERMES_TEST_FILE_TIMEOUT: '3600'
