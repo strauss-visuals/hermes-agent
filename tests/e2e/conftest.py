@@ -287,22 +287,21 @@ def make_adapter(platform: Platform, runner=None):
 
 
 async def send_and_capture(
-    adapter, text: str, platform: Platform, *, settle_timeout: float = 2.0, **event_kwargs
+    adapter, text: str, platform: Platform, *, settle_polls: int = 40, **event_kwargs
 ) -> AsyncMock:
     """Send through the full e2e flow and await the captured asynchronous reply.
 
-    Most tests keep the original 2s budget. A specified longer budget helps
-    loaded hosted runners without changing the required send assertion.
+    Preserve the existing 40 polls at 50ms (including scheduler overshoot):
+    handler DB work hops to worker threads, so loaded runners may wake late.
+    Only tests explicitly opting in use more polls; assertions never change.
     """
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    deadline = asyncio.get_running_loop().time() + settle_timeout
-    while not adapter.send.called:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
+    for _ in range(settle_polls):
+        if adapter.send.called:
             break
-        await asyncio.sleep(min(0.05, remaining))
+        await asyncio.sleep(0.05)
     return adapter.send
 
 
