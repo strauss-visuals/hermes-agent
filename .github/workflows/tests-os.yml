@@ -12,7 +12,7 @@ name: OS-specific tests
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest (other runner labels may be used in matrix rows)
+#   windows  → ``-m platforms``    on windows-latest (x64), with Windows ARM64 in the platform matrix
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -228,7 +228,7 @@ jobs:
     # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
     # on the former 32-core runner 124 s (job 3.1 min). Standard runners use a longer timeout.
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
