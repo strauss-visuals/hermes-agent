@@ -381,6 +381,17 @@ jobs:
       - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
           set -euo pipefail
+          # This private fork has no release tags. The git-upgrade tests must
+          # exercise the real historical N-1 installer, not an invented tag.
+          # Fetch one pinned upstream release tag into this throwaway CI checkout
+          # only; validate its target and ancestry before using it as the fixture.
+          if [ "$SHARD" = git ]; then
+            git fetch --no-tags https://github.com/NousResearch/hermes-agent.git \
+              '+refs/tags/v2026.9.24:refs/tags/v2026.9.24'
+            test "$(git rev-parse 'refs/tags/v2026.9.24^{commit}')" = \
+              f97608f178d1ffeca59860195ab7da295f7c8e5f
+            git merge-base --is-ancestor 'refs/tags/v2026.9.24^{commit}' HEAD~1
+          fi
           source .venv/bin/activate
           if [ "$SHARD" = core ]; then
             mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
