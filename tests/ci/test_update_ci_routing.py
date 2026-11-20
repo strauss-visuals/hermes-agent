@@ -830,6 +830,41 @@ def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
     assert "tests" in run and "tests-os" in run  # the unit lanes still run
 
 
+def test_dispatch_e2e_consumers_use_available_runners_and_bounded_workers():
+    """Every active CI E2E consumer must fit the fork's standard hosted runners.
+
+    This walks the same dispatch graph used by the routing tests, then checks the
+    concrete called-job YAML, so a disabled or unreachable E2E job cannot satisfy
+    the runner contract accidentally.
+    """
+    run = _ci_run(cc.classify([]))
+    paths = (
+        ("tests", "e2e"),
+        ("tests", "e2e-upgrade"),
+        ("tests-os", "e2e-windows"),
+        ("tests-os", "install-update-e2e", "install-update"),
+        ("e2e-desktop-core", "core"),
+        ("e2e-desktop-update", "update"),
+    )
+    for path in paths:
+        node = _reached(run, *path)
+        assert node is not None, f"{'/'.join(path)} is not reachable on dispatch"
+        assert node["body"]["runs-on"] in {"ubuntu-latest", "windows-latest"}, \
+            f"{'/'.join(path)} needs a runner label available to this repository"
+
+    worker_steps = (
+        (("tests", "e2e"), "Run e2e tests"),
+        (("tests", "e2e-upgrade"), "Run upgrade e2e tests"),
+        (("tests-os", "e2e-windows"), "Run Windows E2E suite"),
+        (("tests-os", "install-update-e2e", "install-update"), "Run Windows install + update E2E"),
+    )
+    for path, step_prefix in worker_steps:
+        node = _reached(run, *path)
+        step = next(s for s in node["body"]["steps"] if s.get("name", "").startswith(step_prefix))
+        workers = int(step["env"]["HERMES_TEST_WORKERS"])
+        assert 1 <= workers <= 2, f"{'/'.join(path)} has unbounded worker count {workers}"
+
+
 def test_windows_install_update_dispatch_alone_sets_strict():
     jobs = _run_workflow(".github/workflows/windows-install-update-e2e.yml",
                          inputs={"strict_acceptance": "upd-txn"})
