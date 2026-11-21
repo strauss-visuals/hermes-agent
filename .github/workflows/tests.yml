@@ -142,10 +142,10 @@ jobs:
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
-    # writer processes per test; a 4-vCPU runner serialises them into timeouts.
+    # writer processes per test; standard runners need an extended job timeout.
     if: inputs.e2e
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -285,8 +285,8 @@ jobs:
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -377,6 +377,22 @@ jobs:
         run: |
           source .venv/bin/activate
           python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+
+      - name: Prepare verified historical N-1 tag (git shard only)
+        if: matrix.shard == 'git'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The private fork carries upstream Git history but not upstream
+          # release tag refs. Fetch exactly one pinned historical tag
+          # into this disposable runner checkout, never publish a tag.
+          git fetch --no-tags https://github.com/NousResearch/hermes-agent.git \
+            '+refs/tags/v2026.9.24:refs/tags/v2026.9.24'
+          test "$(git rev-parse 'refs/tags/v2026.9.24^{commit}')" = \
+            f97608f178d1ffeca59860195ab7da295f7c8e5f
+          # Fail closed if the pinned N-1 release is not on the checkout's
+          # historical mainline. fetch-depth: 0 above is required.
+          git merge-base --is-ancestor 'refs/tags/v2026.9.24^{commit}' HEAD~1
 
       - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
