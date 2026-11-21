@@ -42,7 +42,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +63,7 @@ from tests.e2e.core.windows._helpers import (
     kill_tree,
     wait_until,
 )
+from tests.e2e.core.windows_update._profile_cleanup import PROFILE_OWNER_MARKER, remove_owned_profile
 from tests.fakes.fake_llm_provider import write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -78,7 +78,6 @@ CANONICAL_URLS = (
     "git@github.com:NousResearch/hermes-agent.git",
 )
 NEXT_MARKER = ".hermes-e2e-next"
-PROFILE_OWNER_MARKER = ".hermes-e2e-owner"
 # Captured before any machine strips PATH: harness plumbing (serve.git, rev-parse) only.
 REAL_GIT = shutil.which("git")
 
@@ -556,17 +555,7 @@ class Machine:
         # this machine's synthetic, randomly suffixed test profile. Never touch
         # an actual user's profile or the machine's diagnostic artifacts.
         if self.profiles_root is not None and os.environ.get(OPT_IN_ENV) == "1":
-            profile = self.profile
-            if (profile.parent.resolve() != self.profiles_root.resolve()
-                    or not re.fullmatch(r"(?:[^\\/]+ )?hermes-e2e-[0-9a-f]{12}", profile.name)
-                    or profile.is_symlink() or profile.is_junction()):
-                raise RuntimeError(f"refusing unsafe E2E profile cleanup: {profile}")
-            if profile.exists():
-                marker = profile / PROFILE_OWNER_MARKER
-                if (marker.is_symlink() or marker.is_junction()
-                        or marker.read_text(encoding="ascii") != self._profile_token):
-                    raise RuntimeError(f"refusing unowned E2E profile cleanup: {profile}")
-                shutil.rmtree(profile)
+            remove_owned_profile(self.profile, self.profiles_root, self._profile_token)
 
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
