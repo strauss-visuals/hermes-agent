@@ -12,7 +12,8 @@ from tests.e2e.core.windows_update._profile_cleanup import (
     remove_owned_profile,
 )
 
-pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
+# These bounded filesystem checks run in the ordinary native Windows unit lane.
+pytestmark = pytest.mark.platforms("windows")
 
 
 def _profile(root: Path, name: str = "hermes-e2e-0123456789ab") -> Path:
