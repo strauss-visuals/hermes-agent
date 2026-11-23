@@ -69,7 +69,10 @@ from tests.fakes.fake_llm_provider import write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 OPT_IN_ENV = "HERMES_E2E_WINDOWS_INSTALL"
-INSTALL_TIMEOUT = 1500.0
+# Windows hosted runners can take over 25 minutes to finish an isolated install
+# while unpacking npm and preparing Node dependencies. Keep per-install timeout
+# headroom below the workflow's 180-minute job limit.
+INSTALL_TIMEOUT = 2100.0
 UPDATE_TIMEOUT = 1200.0
 CMD_TIMEOUT = 300.0
 GATEWAY_READY_TIMEOUT = 240.0
