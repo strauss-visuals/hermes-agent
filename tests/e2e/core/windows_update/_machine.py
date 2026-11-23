@@ -781,10 +781,22 @@ class Machine:
 
     def kill_owned(self) -> None:
         """Hard-stop every live process of this machine (end of a gateway phase, teardown)."""
-        kill_tree(self.owned_processes())
+        import psutil
+
+        owned = self.owned_processes()
+        kill_tree(owned)
         for proc in self._spawned:
             if proc.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
+
+        deadline = time.monotonic() + 60
+        for proc in [*owned, *self._spawned]:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.TimeoutExpired, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"owned process {proc.pid} did not exit within 60 seconds") from exc
 
     def teardown(self) -> None:
         self.kill_owned()
