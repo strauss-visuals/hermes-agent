@@ -6,6 +6,10 @@ import psutil
 import pytest
 
 from tests.e2e.core.windows_update import _machine
+from tests.e2e.core.windows_update._machine import REQUIRES_OPT_IN
+
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
+              pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 
 class _DetachedProcess:
