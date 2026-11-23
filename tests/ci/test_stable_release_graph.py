@@ -99,6 +99,16 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
         assert gate(jobs[name]["if"], {}, failed), name
 
 
+def test_stable_release_windows_live_uses_an_available_runner():
+    """The required Windows live lane must not queue on this fork's unavailable large runner."""
+    release_jobs = workflow("stable-release.yml")["jobs"]
+    live_job = release_jobs["windows-live"]
+    assert live_job["uses"] == "./.github/workflows/windows-venv-e2e.yml"
+
+    live_workflow = workflow("windows-venv-e2e.yml")
+    assert live_workflow["jobs"]["venv-holder-e2e"]["runs-on"] == "windows-latest"
+
+
 def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     """The gate's SKIPPED_BY table and the workflow's conditions describe the same graph."""
     from scripts.releases.stable import SKIPPED_BY
