@@ -62,7 +62,10 @@ class TestSlashCommands:
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
 
-        send = await send_and_capture(adapter, "restart gateway", platform)
+        # Restart dispatch is asynchronous; cold provider/service checks on a
+        # loaded standard runner can outlast the generic 2s capture window.
+        # Keep the send and restart-call assertions unchanged.
+        send = await send_and_capture(adapter, "restart gateway", platform, settle_polls=120)
 
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]

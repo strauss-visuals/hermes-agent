@@ -49,9 +49,10 @@ concurrency:
 jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
-    runs-on: windows-latest-32-core
-    # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
-    timeout-minutes: 75
+    runs-on: windows-latest
+    # Standard Windows runs all journeys with bounded parallel process trees. Keep
+    # enough headroom for slower installs and final artifact/cleanup handling.
+    timeout-minutes: 180
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -69,6 +70,12 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
+      - name: Record free disk space before Windows install E2E
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+            Select-Object DeviceID, Size, FreeSpace | Format-Table -AutoSize
+
       - name: Run Windows install + update E2E
         shell: bash
         run: |
@@ -84,8 +91,10 @@ jobs:
           HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
           HERMES_E2E_PROFILES_ROOT: C:\Users
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
-          # One journey per file, all in parallel (each is mostly network + subprocess wait).
-          HERMES_TEST_WORKERS: '6'
+          # Run every journey, but cap concurrent full clones and fake user profiles.
+          # Three simultaneously filling C: exhausted hosted disk (ENOSPC in job 135248101031);
+          # keep all tests and assertions while using two installer process trees.
+          HERMES_TEST_WORKERS: '2'
           # test_crash_cells.py runs its whole journey (install, gateway phase, six crash cells)
           # inside one file: ~2,100 s on a normal runner, past 2,400 s on a slow one.
           HERMES_TEST_FILE_TIMEOUT: '3600'
@@ -93,6 +102,13 @@ jobs:
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
+
+      - name: Record free disk space after Windows install E2E
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+            Select-Object DeviceID, Size, FreeSpace | Format-Table -AutoSize
 
       - name: Every crash cell ran
         # run_tests.sh passes a file whose tests were all deselected (pytest exit 5) or skipped,

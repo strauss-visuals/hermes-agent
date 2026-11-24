@@ -43,6 +43,7 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -63,11 +64,15 @@ from tests.e2e.core.windows._helpers import (
     kill_tree,
     wait_until,
 )
+from tests.e2e.core.windows_update._profile_cleanup import PROFILE_OWNER_MARKER, remove_owned_profile
 from tests.fakes.fake_llm_provider import write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 OPT_IN_ENV = "HERMES_E2E_WINDOWS_INSTALL"
-INSTALL_TIMEOUT = 1500.0
+# Windows hosted runners can take over 25 minutes to finish an isolated install
+# while unpacking npm and preparing Node dependencies. Keep per-install timeout
+# headroom below the workflow's 180-minute job limit.
+INSTALL_TIMEOUT = 2100.0
 UPDATE_TIMEOUT = 1200.0
 CMD_TIMEOUT = 300.0
 GATEWAY_READY_TIMEOUT = 240.0
@@ -85,6 +90,259 @@ REAL_GIT = shutil.which("git")
 REQUIRES_OPT_IN = pytest.mark.skipif(
     os.environ.get(OPT_IN_ENV) != "1",
     reason=f"mutates HKCU PATH and downloads a toolchain; set {OPT_IN_ENV}=1 (CI does)")
+
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _stat_identity(info, *, directory: bool) -> tuple[int, int] | None:
+    attrs = getattr(info, "st_file_attributes", 0)
+    if (attrs & _REPARSE_POINT
+            or (directory and not stat.S_ISDIR(info.st_mode))
+            or (not directory and not stat.S_ISREG(info.st_mode))
+            or not info.st_ino):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _path_identity(path: Path, *, directory: bool) -> tuple[int, int] | None:
+    """Return an ordinary file/directory identity, rejecting reparse points."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    is_junction = getattr(path, "is_junction", lambda: False)()
+    if (stat.S_ISLNK(info.st_mode) or is_junction
+            or _stat_identity(info, directory=directory) is None):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _directory_chain_identities(path: Path) -> tuple[tuple[Path, tuple[int, int]], ...] | None:
+    """Capture ordinary directory identities from the volume root through ``path``."""
+    identities = []
+    device = None
+    for component in reversed((path, *path.parents)):
+        identity = _path_identity(component, directory=True)
+        if identity is None or (device is not None and identity[0] != device):
+            return None
+        device = identity[0]
+        identities.append((component, identity))
+    return tuple(identities)
+
+
+def _write_profile_owner_marker(marker, token: str) -> None:
+    marker.write(token)
+
+
+def _publish_profile_handle(set_info, source, parent, profile: Path) -> None:
+    """Publish a directory handle relative to a pinned parent, without replacement."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _FILE_RENAME_INFO(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", wintypes.BOOL),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1),
+        ]
+
+    def rename(name: bytes, root_handle) -> bool:
+        size = ctypes.sizeof(_FILE_RENAME_INFO) + len(name)
+        buffer = ctypes.create_string_buffer(size)
+        rename_info = ctypes.cast(buffer, ctypes.POINTER(_FILE_RENAME_INFO)).contents
+        rename_info.ReplaceIfExists = False
+        rename_info.RootDirectory = root_handle
+        rename_info.FileNameLength = len(name)
+        ctypes.memmove(ctypes.addressof(buffer) + _FILE_RENAME_INFO.FileName.offset, name, len(name))
+        return bool(set_info(source, 3, buffer, size))
+
+    # FileRenameInfo (3) is handle-based and ReplaceIfExists=False is no-replace.
+    if rename(profile.name.encode("utf-16-le"), parent):
+        return
+    error = ctypes.get_last_error()
+    if error != 87:
+        raise ctypes.WinError(error)
+    # Some supported Windows filesystem/provider combinations reject RootDirectory
+    # with ERROR_INVALID_PARAMETER; retry by absolute name while parent is pinned.
+    if not rename(str(profile).encode("utf-16-le"), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+@contextlib.contextmanager
+def _pinned_profile_parent_chain(
+    chain: tuple[tuple[Path, tuple[int, int]], ...],
+):
+    """Hold every checked ancestor open against rename/reparse substitution."""
+    if os.name != "nt":
+        raise RuntimeError("fake Windows profiles require Windows directory handles")
+    import ctypes
+    from ctypes import wintypes
+
+    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", ctypes.c_ubyte * 8),
+            ("ftLastAccessTime", ctypes.c_ubyte * 8),
+            ("ftLastWriteTime", ctypes.c_ubyte * 8),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    get_info = kernel32.GetFileInformationByHandle
+    get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
+    get_info.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    invalid_handle = ctypes.c_void_p(-1).value
+    handles = []
+    volume = None
+    try:
+        for component, expected in chain:
+            access = 0x80 | 0x20 | (0x4 if component == chain[-1][0] else 0)
+            handle = create_file(str(component), access, 0x1 | 0x2, None, 3,
+                                 0x02000000 | 0x00200000, None)
+            if handle == invalid_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            info = _BY_HANDLE_FILE_INFORMATION()
+            if not get_info(handle, ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            file_id = (info.nFileIndexHigh << 32) | info.nFileIndexLow
+            if (info.dwFileAttributes & _REPARSE_POINT
+                    or not info.dwFileAttributes & 0x10
+                    or expected[1] != file_id
+                    or (volume is not None and info.dwVolumeSerialNumber != volume)):
+                raise RuntimeError(f"profiles ancestor changed or is unsafe: {component}")
+            volume = info.dwVolumeSerialNumber
+        # The first handle is the volume root; its raw volume serial anchors the chain.
+        yield handles[-1], volume
+    finally:
+        for handle in reversed(handles):
+            close_handle(handle)
+
+
+def _rename_pending_profile(pending: Path, profile: Path,
+                            expected_identity: tuple[int, int],
+                            parent_handle, parent_volume: int,
+                            mark_owned) -> None:
+    """Rename the validated pending handle under the pinned, validated parent chain."""
+    if os.name != "nt":
+        raise RuntimeError("fake Windows profiles require Windows no-replace rename semantics")
+    import ctypes
+    from ctypes import wintypes
+
+    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", ctypes.c_ubyte * 8),
+            ("ftLastAccessTime", ctypes.c_ubyte * 8),
+            ("ftLastWriteTime", ctypes.c_ubyte * 8),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    get_info = kernel32.GetFileInformationByHandle
+    get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
+    get_info.restype = wintypes.BOOL
+    set_info = kernel32.SetFileInformationByHandle
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    invalid_handle = ctypes.c_void_p(-1).value
+    share = 0x1 | 0x2
+    open_existing = 3
+    backup_semantics = 0x02000000
+    open_reparse_point = 0x00200000
+    source = create_file(str(pending), 0x00010000 | 0x80, share, None, open_existing,
+                         backup_semantics | open_reparse_point, None)
+    if source == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = _BY_HANDLE_FILE_INFORMATION()
+        if not get_info(source, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        attrs = info.dwFileAttributes
+        identity = (info.dwVolumeSerialNumber, (info.nFileIndexHigh << 32) | info.nFileIndexLow)
+        if attrs & _REPARSE_POINT or not attrs & 0x10:
+            raise RuntimeError(f"pending profile handle is not an ordinary directory: {pending}")
+        # Python's Windows st_dev is not the raw volume serial returned by
+        # BY_HANDLE_FILE_INFORMATION; st_ino is the same 64-bit file index.
+        if expected_identity[1] != identity[1]:
+            raise RuntimeError(f"pending profile path changed before handle validation: {pending}")
+        if identity[0] != parent_volume:
+            raise RuntimeError(f"pending profile and destination are on different volumes: {pending}")
+        _publish_profile_handle(set_info, source, parent_handle, profile)
+        # Mark ownership before any post-publication check can fail; the caller's
+        # stage-failure path can then use the token-checked cleanup.
+        if mark_owned is not None:
+            mark_owned()
+        if _path_identity(profile, directory=True) != expected_identity:
+            raise RuntimeError(f"published profile identity differs; inspect {profile}")
+    finally:
+        close_handle(source)
+
+
+def _create_profile_from_pending(profile: Path, token: str, mark_owned=None) -> None:
+    """Publish a final profile only after its small ownership marker is complete."""
+    if os.path.lexists(profile):
+        raise FileExistsError(f"profile destination already exists: {profile}")
+    parent_chain = _directory_chain_identities(profile.parent)
+    if parent_chain is None:
+        raise RuntimeError(
+            f"profiles path is missing or contains a reparse point or non-directory: {profile.parent}")
+    with _pinned_profile_parent_chain(parent_chain) as (parent_handle, parent_volume):
+        pending = profile.parent / f".hermes-e2e-pending-{uuid.uuid4().hex}"
+        pending.mkdir(exist_ok=False)
+        pending_identity = _path_identity(pending, directory=True)
+        if pending_identity is None:
+            raise RuntimeError(f"pending profile directory identity unavailable; inspect {pending}")
+        marker = pending / PROFILE_OWNER_MARKER
+        try:
+            with marker.open("x", encoding="ascii") as output:
+                marker_identity = _stat_identity(os.fstat(output.fileno()), directory=False)
+                if marker_identity is None:
+                    raise RuntimeError("pending profile marker identity unavailable")
+                _write_profile_owner_marker(output, token)
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException as exc:
+            exc.add_note(f"small pending artifact remains at {pending}")
+            raise
+
+        if (_path_identity(pending, directory=True) != pending_identity
+                or _path_identity(marker, directory=False) != marker_identity
+                or marker.read_text(encoding="ascii") != token):
+            raise RuntimeError(f"pending profile identity check failed; inspect {pending}")
+        try:
+            _rename_pending_profile(
+                pending, profile, pending_identity, parent_handle, parent_volume, mark_owned)
+        except OSError as exc:
+            exc.add_note(f"pending profile artifact remains at {pending}")
+            raise
 
 
 def _strip_path(path: str, drop: Iterable[str]) -> str:
@@ -156,6 +414,8 @@ class Machine:
     _seq: int = 0
     _spawned: list[subprocess.Popen] = field(default_factory=list)
     _lock_depth: int = 0
+    _profile_token: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
+    _profile_owned: bool = field(default=False, init=False, repr=False)
     timings: list[tuple[str, float]] = field(default_factory=list)
 
     # -- layout ---------------------------------------------------------------
@@ -219,6 +479,13 @@ class Machine:
     def stage(self) -> None:
         """serve.git at HEAD (+ NEXT in its object store), the URL redirect, a seeded home."""
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.profiles_root is not None:
+            # Never adopt an existing C:\\Users profile on a suffix collision.
+            # The final name appears only after its marker is completely written.
+            if os.environ.get(OPT_IN_ENV) != "1":
+                raise RuntimeError("fake Windows user profiles require explicit E2E opt-in")
+            _create_profile_from_pending(
+                self.profile, self._profile_token, lambda: setattr(self, "_profile_owned", True))
         self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD")
         harness_git("clone", "--bare", "--quiet", str(REPO_ROOT), str(self.serve))
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.head)
@@ -517,10 +784,22 @@ class Machine:
 
     def kill_owned(self) -> None:
         """Hard-stop every live process of this machine (end of a gateway phase, teardown)."""
-        kill_tree(self.owned_processes())
+        import psutil
+
+        owned = self.owned_processes()
+        kill_tree(owned)
         for proc in self._spawned:
             if proc.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
+
+        deadline = time.monotonic() + 60
+        for proc in [*owned, *self._spawned]:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.TimeoutExpired, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"owned process {proc.pid} did not exit within 60 seconds") from exc
 
     def teardown(self) -> None:
         self.kill_owned()
@@ -540,19 +819,34 @@ class Machine:
             (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
             (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
 
+        # The CI suite runs several full installs per job. Fake profiles were
+        # formerly left in C:\\Users even after their evidence was copied to D:,
+        # exhausting C: after ~8 journeys (30 GB free -> <1 GB). Only remove
+        # this machine's synthetic, randomly suffixed test profile. Never touch
+        # an actual user's profile or the machine's diagnostic artifacts.
+        if self._profile_owned and self.profiles_root is not None and os.environ.get(OPT_IN_ENV) == "1":
+            remove_owned_profile(self.profile, self.profiles_root, self._profile_token)
+
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
                 system_git: bool = False) -> Machine:
     """A staged machine. Its work dir (serve.git, transcripts) lives under
     ``HERMES_E2E_MACHINE_ROOT`` (else ``tmp_root``); its user profile under
     ``HERMES_E2E_PROFILES_ROOT`` (CI: ``C:\\Users``), named ``[<person> ]hermes-e2e-<id>``."""
-    sfx = uuid.uuid4().hex[:4]
+    sfx = uuid.uuid4().hex[:12]
     base = Path(os.environ.get("HERMES_E2E_MACHINE_ROOT") or tmp_root)
     profiles = os.environ.get("HERMES_E2E_PROFILES_ROOT")
     name = f"{person} hermes-e2e-{sfx}" if person else f"hermes-e2e-{sfx}"
     machine = Machine(root=base / f"{label}-{sfx}", profile_name=name, base_url=base_url,
                       profiles_root=Path(profiles) if profiles else None, system_git=system_git)
-    machine.stage()
+    try:
+        machine.stage()
+    except BaseException:
+        # A failed stage never returns the Machine to its caller, so its normal
+        # teardown cannot reclaim the profile created at the start of stage().
+        if machine._profile_owned and machine.profiles_root is not None:
+            remove_owned_profile(machine.profile, machine.profiles_root, machine._profile_token)
+        raise
     return machine
 
 

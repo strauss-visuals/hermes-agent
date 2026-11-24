@@ -12,7 +12,7 @@ name: OS-specific tests
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest-32-core and windows-latest-32-arm-core
+#   windows  → ``-m platforms``    on windows-latest (x64), with Windows ARM64 in the platform matrix
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -224,11 +224,10 @@ jobs:
     # xfails (per-file KNOWN tables), so a fix turns this job red until the entry goes.
     name: Windows E2E (real processes)
     if: inputs.e2e
-    # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
-    # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
-    # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
-    runs-on: windows-latest-32-core
-    timeout-minutes: 25
+    # Standard hosted Windows runner: files spawn real process trees.
+    # Keep at most two file trees active and retain the timeout headroom.
+    runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -250,7 +249,7 @@ jobs:
             -m "platforms and integration" -v --tb=short -rA
         env:
           HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
-          HERMES_TEST_WORKERS: '6'
+          HERMES_TEST_WORKERS: '2'
           HERMES_TEST_FILE_TIMEOUT: '900'
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''

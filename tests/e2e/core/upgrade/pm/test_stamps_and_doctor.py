@@ -66,6 +66,11 @@ def updated(tmp_path_factory, provider):
     root = tmp_path_factory.mktemp("pm-stamps")
     sb, origin = P.install_head(root)
     P.configure(sb, provider.base_url)
+    # This suite publishes its synthetic releases only to the sandbox's local
+    # origin/main; the stable channel would query public GitHub releases and
+    # can fail under CI's shared anonymous API rate limit (HTTP 403).
+    # Preserve the real update --check assertion against the local origin.
+    I.pin_main_channel(sb)
     installed_gen = P.selected_generation(sb)
     target = P.publish_dependency_release(origin, root, 1)
     up = P.update(sb)
