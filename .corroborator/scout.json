@@ -1,0 +1,11 @@
+{
+  "schema_version": "corroborator-repo-scout/v1",
+  "safe_tests": [],
+  "github_actions": {
+    "policy": "required",
+    "qualified_workflows": [
+      "CI",
+      "Docker Build, Test, and Publish"
+    ]
+  }
+}
